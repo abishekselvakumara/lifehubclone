@@ -1,0 +1,5 @@
+@import "tailwindcss";
+/* Add to your index.css or App.css */
+html, body {
+  overflow-x: hidden;
+}
