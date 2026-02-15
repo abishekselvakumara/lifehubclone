@@ -9,7 +9,7 @@ import {
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell 
 } from 'recharts';
 import { format, subDays, eachDayOfInterval } from 'date-fns';
-import api from '../services/api';
+import supabase from '../lib/supabase'; // Using Supabase directly
 
 const Finance = () => {
   const [transactions, setTransactions] = useState([]);
@@ -46,9 +46,18 @@ const Finance = () => {
   const fetchTransactions = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/finance');
-      setTransactions(response.data.sort((a, b) => new Date(b.date) - new Date(a.date)));
-      setFilteredTransactions(response.data);
+      const { data, error } = await supabase
+        .from('finance')
+        .select('*')
+        .order('date', { ascending: false });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        return;
+      }
+
+      setTransactions(data || []);
+      setFilteredTransactions(data || []);
     } catch (error) {
       console.error('Error fetching transactions:', error);
     } finally {
@@ -61,8 +70,8 @@ const Finance = () => {
     
     if (searchTerm) {
       filtered = filtered.filter(t => 
-        t.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        t.category.toLowerCase().includes(searchTerm.toLowerCase())
+        t.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        t.category?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
     
@@ -81,41 +90,51 @@ const Finance = () => {
     if (!newTransaction.description || !newTransaction.amount) return;
 
     try {
+      const amount = parseFloat(newTransaction.amount);
+      
       if (editingTransaction) {
-        // Since your backend doesn't have PUT, do delete + add
-        await api.delete(`/finance/${editingTransaction.id}`);
-        const response = await api.post('/finance', {
-          description: newTransaction.description,
-          amount: parseFloat(newTransaction.amount),
-          type: newTransaction.type,
-          category: newTransaction.category,
-          date: newTransaction.date
-        });
+        // Update existing transaction
+        const { data, error } = await supabase
+          .from('finance')
+          .update({
+            description: newTransaction.description,
+            amount: amount,
+            type: newTransaction.type,
+            category: newTransaction.category,
+            date: newTransaction.date
+          })
+          .eq('id', editingTransaction.id)
+          .select();
+
+        if (error) throw error;
+        
         setTransactions(transactions.map(t => 
-          t.id === editingTransaction.id ? response.data : t
+          t.id === editingTransaction.id ? data[0] : t
         ));
       } else {
-        const response = await api.post('/finance', {
-          description: newTransaction.description,
-          amount: parseFloat(newTransaction.amount),
-          type: newTransaction.type,
-          category: newTransaction.category,
-          date: newTransaction.date
-        });
-        setTransactions([response.data, ...transactions]);
+        // Insert new transaction
+        const { data, error } = await supabase
+          .from('finance')
+          .insert([{
+            description: newTransaction.description,
+            amount: amount,
+            type: newTransaction.type,
+            category: newTransaction.category,
+            date: newTransaction.date
+          }])
+          .select();
+
+        if (error) throw error;
+        
+        setTransactions([data[0], ...transactions]);
       }
       
       setShowAddModal(false);
       setEditingTransaction(null);
-      setNewTransaction({
-        description: '',
-        amount: '',
-        type: 'expense',
-        category: 'food',
-        date: new Date().toISOString().split('T')[0]
-      });
+      resetNewTransaction();
     } catch (error) {
       console.error('Error saving transaction:', error);
+      alert('Error saving transaction. Please try again.');
     }
   };
 
@@ -123,37 +142,54 @@ const Finance = () => {
     if (!window.confirm('Delete this transaction?')) return;
     
     try {
-      await api.delete(`/finance/${id}`);
+      const { error } = await supabase
+        .from('finance')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      
       setTransactions(transactions.filter(t => t.id !== id));
     } catch (error) {
       console.error('Error deleting transaction:', error);
+      alert('Error deleting transaction. Please try again.');
     }
   };
 
   const handleEditTransaction = (transaction) => {
     setEditingTransaction(transaction);
     setNewTransaction({
-      description: transaction.description,
-      amount: transaction.amount.toString(),
-      type: transaction.type,
-      category: transaction.category,
-      date: transaction.date
+      description: transaction.description || '',
+      amount: transaction.amount?.toString() || '',
+      type: transaction.type || 'expense',
+      category: transaction.category || 'food',
+      date: transaction.date || new Date().toISOString().split('T')[0]
     });
     setShowAddModal(true);
   };
 
-  // Calculate totals
+  const resetNewTransaction = () => {
+    setNewTransaction({
+      description: '',
+      amount: '',
+      type: 'expense',
+      category: 'food',
+      date: new Date().toISOString().split('T')[0]
+    });
+  };
+
+  // Calculate totals with safe number handling
   const totalIncome = filteredTransactions
     .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + (t.amount || 0), 0);
   
   const totalExpenses = filteredTransactions
     .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + (t.amount || 0), 0);
   
   const balance = totalIncome - totalExpenses;
 
-  // Chart data
+  // Chart data with safe handling
   const last7Days = eachDayOfInterval({
     start: subDays(new Date(), 6),
     end: new Date()
@@ -163,8 +199,8 @@ const Finance = () => {
     const dayTransactions = transactions.filter(t => t.date === date);
     return {
       date: format(new Date(date), 'MMM dd'),
-      income: dayTransactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0),
-      expenses: dayTransactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0)
+      income: dayTransactions.filter(t => t.type === 'income').reduce((sum, t) => sum + (t.amount || 0), 0),
+      expenses: dayTransactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + (t.amount || 0), 0)
     };
   });
 
@@ -172,21 +208,33 @@ const Finance = () => {
     name: category.charAt(0).toUpperCase() + category.slice(1),
     value: transactions
       .filter(t => t.type === 'expense' && t.category === category)
-      .reduce((sum, t) => sum + t.amount, 0)
+      .reduce((sum, t) => sum + (t.amount || 0), 0)
   })).filter(c => c.value > 0);
 
   const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6'];
 
   const exportToCSV = () => {
-    const headers = ['Date', 'Description', 'Category', 'Type', 'Amount'];
-    const csvData = transactions.map(t => [t.date, t.description, t.category, t.type, t.amount]);
-    const csvContent = [headers.join(','), ...csvData.map(row => row.join(','))].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`;
-    a.click();
+    try {
+      const headers = ['Date', 'Description', 'Category', 'Type', 'Amount'];
+      const csvData = transactions.map(t => [
+        t.date || '', 
+        t.description || '', 
+        t.category || '', 
+        t.type || '', 
+        t.amount || 0
+      ]);
+      const csvContent = [headers.join(','), ...csvData.map(row => row.join(','))].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting CSV:', error);
+      alert('Error exporting data. Please try again.');
+    }
   };
 
   return (
@@ -216,13 +264,7 @@ const Finance = () => {
             <button
               onClick={() => {
                 setEditingTransaction(null);
-                setNewTransaction({
-                  description: '',
-                  amount: '',
-                  type: 'expense',
-                  category: 'food',
-                  date: new Date().toISOString().split('T')[0]
-                });
+                resetNewTransaction();
                 setShowAddModal(true);
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm flex items-center"
@@ -242,7 +284,9 @@ const Finance = () => {
                 <TrendingUp className="h-4 w-4 text-green-500" />
               </div>
             </div>
-            <span className="text-2xl font-semibold text-green-500">${totalIncome.toFixed(2)}</span>
+            <span className="text-2xl font-semibold text-green-500">
+              ${totalIncome.toFixed(2)}
+            </span>
           </div>
 
           <div className="bg-[#0F0F0F] border border-[#2A2A2A] rounded-xl p-6">
@@ -252,7 +296,9 @@ const Finance = () => {
                 <TrendingDown className="h-4 w-4 text-red-500" />
               </div>
             </div>
-            <span className="text-2xl font-semibold text-red-500">${totalExpenses.toFixed(2)}</span>
+            <span className="text-2xl font-semibold text-red-500">
+              ${totalExpenses.toFixed(2)}
+            </span>
           </div>
 
           <div className="bg-[#0F0F0F] border border-[#2A2A2A] rounded-xl p-6">
@@ -307,6 +353,7 @@ const Finance = () => {
                         innerRadius={60}
                         outerRadius={80}
                         dataKey="value"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                       >
                         {categoryData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -425,14 +472,14 @@ const Finance = () => {
                       </td>
                       <td className="py-4 px-6">
                         <span className="text-sm text-[#9A9A9A]">
-                          {format(new Date(transaction.date), 'MMM dd, yyyy')}
+                          {transaction.date ? format(new Date(transaction.date), 'MMM dd, yyyy') : ''}
                         </span>
                       </td>
                       <td className="py-4 px-6 text-right">
                         <span className={`text-sm font-medium ${
                           transaction.type === 'income' ? 'text-green-500' : 'text-red-500'
                         }`}>
-                          {transaction.type === 'income' ? '+' : '-'}${transaction.amount.toFixed(2)}
+                          {transaction.type === 'income' ? '+' : '-'}${(transaction.amount || 0).toFixed(2)}
                         </span>
                       </td>
                       <td className="py-4 px-6 text-right">
@@ -478,6 +525,7 @@ const Finance = () => {
                   onClick={() => {
                     setShowAddModal(false);
                     setEditingTransaction(null);
+                    resetNewTransaction();
                   }}
                   className="p-1 text-[#6A6A6A] hover:text-[#EDEDED] rounded-md hover:bg-[#1A1A1A]"
                 >
@@ -492,6 +540,7 @@ const Finance = () => {
                   value={newTransaction.description}
                   onChange={(e) => setNewTransaction({...newTransaction, description: e.target.value})}
                   className="w-full px-4 py-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg text-[#EDEDED] placeholder-[#6A6A6A] focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                  required
                 />
 
                 <input
@@ -502,6 +551,7 @@ const Finance = () => {
                   className="w-full px-4 py-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg text-[#EDEDED] placeholder-[#6A6A6A] focus:outline-none focus:border-blue-500 transition-colors text-sm"
                   min="0"
                   step="0.01"
+                  required
                 />
 
                 <select
@@ -528,6 +578,7 @@ const Finance = () => {
                   value={newTransaction.date}
                   onChange={(e) => setNewTransaction({...newTransaction, date: e.target.value})}
                   className="w-full px-4 py-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg text-[#EDEDED] focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                  required
                 />
               </div>
 
@@ -536,6 +587,7 @@ const Finance = () => {
                   onClick={() => {
                     setShowAddModal(false);
                     setEditingTransaction(null);
+                    resetNewTransaction();
                   }}
                   className="px-4 py-2 text-sm text-[#9A9A9A] hover:text-[#EDEDED] rounded-lg hover:bg-[#1A1A1A] transition-colors"
                 >
@@ -544,6 +596,7 @@ const Finance = () => {
                 <button
                   onClick={handleSaveTransaction}
                   className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                  disabled={!newTransaction.description || !newTransaction.amount}
                 >
                   {editingTransaction ? 'Update' : 'Add'}
                 </button>

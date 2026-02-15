@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, BookOpen, X, Edit2, Trash2, Tag } from 'lucide-react';
-import api from '../services/api';
-import { format } from 'date-fns';
+import supabase from '../lib/supabase';
+import { format } from 'date-fns'; // Fixed import
 
 const Study = () => {
   const [notes, setNotes] = useState([]);
@@ -25,12 +25,22 @@ const Study = () => {
   const fetchNotes = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/notes');
-      setNotes(response.data);
-      setFilteredNotes(response.data);
-      
-      const uniqueSubjects = [...new Set(response.data.map(note => note.subject).filter(Boolean))];
+
+      const { data, error } = await supabase
+        .from('notes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      setNotes(data || []);
+      setFilteredNotes(data || []);
+
+      const uniqueSubjects = [
+        ...new Set((data || []).map(note => note.subject).filter(Boolean))
+      ];
       setSubjects(uniqueSubjects);
+
     } catch (error) {
       console.error('Error fetching notes:', error);
     } finally {
@@ -43,8 +53,8 @@ const Study = () => {
     
     if (searchTerm) {
       filtered = filtered.filter(note => 
-        note.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        note.content.toLowerCase().includes(searchTerm.toLowerCase())
+        note.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        note.content?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
     
@@ -60,25 +70,44 @@ const Study = () => {
 
     try {
       if (editingNote) {
-        const response = await api.patch(`/notes/${editingNote.id}`, newNote);
-        setNotes(notes.map(n => n.id === editingNote.id ? response.data : n));
+        // Update existing note
+        const { error } = await supabase
+          .from('notes')
+          .update({
+            title: newNote.title,
+            content: newNote.content,
+            subject: newNote.subject || null
+          })
+          .eq('id', editingNote.id);
+
+        if (error) throw error;
       } else {
-        const response = await api.post('/notes', {
-          ...newNote,
-          createdAt: new Date().toISOString()
-        });
-        setNotes([response.data, ...notes]);
-        
-        if (newNote.subject && !subjects.includes(newNote.subject)) {
-          setSubjects([...subjects, newNote.subject]);
-        }
+        // Insert new note
+        const { error } = await supabase
+          .from('notes')
+          .insert([
+            {
+              title: newNote.title,
+              content: newNote.content,
+              subject: newNote.subject || null,
+              created_at: new Date().toISOString()
+            }
+          ]);
+
+        if (error) throw error;
       }
-      
+
+      // Refresh notes after save
+      await fetchNotes();
+
+      // Reset form and close modal
       setShowAddModal(false);
       setEditingNote(null);
       setNewNote({ title: '', content: '', subject: '' });
+
     } catch (error) {
       console.error('Error saving note:', error);
+      alert('Error saving note. Please try again.');
     }
   };
 
@@ -86,17 +115,40 @@ const Study = () => {
     if (!window.confirm('Delete this note?')) return;
     
     try {
-      await api.delete(`/notes/${id}`);
+      const { error } = await supabase
+        .from('notes')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Remove from local state
       setNotes(notes.filter(n => n.id !== id));
+      
     } catch (error) {
       console.error('Error deleting note:', error);
+      alert('Error deleting note. Please try again.');
     }
   };
 
   const handleEditNote = (note) => {
     setEditingNote(note);
-    setNewNote({ title: note.title, content: note.content, subject: note.subject || '' });
+    setNewNote({ 
+      title: note.title || '', 
+      content: note.content || '', 
+      subject: note.subject || '' 
+    });
     setShowAddModal(true);
+  };
+
+  const formatDate = (dateString) => {
+    try {
+      if (!dateString) return '';
+      return format(new Date(dateString), 'MMM dd, yyyy');
+    } catch (error) {
+      console.error('Error formatting date:', error);
+      return '';
+    }
   };
 
   return (
@@ -193,7 +245,7 @@ const Study = () => {
                   
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-[#6A6A6A]">
-                      {format(new Date(note.createdAt), 'MMM dd, yyyy')}
+                      {formatDate(note.created_at)}
                     </span>
                     <BookOpen className="h-3.5 w-3.5 text-[#6A6A6A]" />
                   </div>
@@ -201,7 +253,7 @@ const Study = () => {
               </div>
             ))}
 
-            {filteredNotes.length === 0 && (
+            {filteredNotes.length === 0 && !loading && (
               <div className="col-span-full text-center py-12">
                 <BookOpen className="h-12 w-12 text-[#2A2A2A] mx-auto mb-3" />
                 <p className="text-[#6A6A6A] text-sm">No notes yet. Create your first note!</p>
@@ -237,6 +289,7 @@ const Study = () => {
                   value={newNote.title}
                   onChange={(e) => setNewNote({...newNote, title: e.target.value})}
                   className="w-full px-4 py-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg text-[#EDEDED] placeholder-[#6A6A6A] focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                  required
                 />
                 
                 <input
@@ -253,6 +306,7 @@ const Study = () => {
                   onChange={(e) => setNewNote({...newNote, content: e.target.value})}
                   rows="8"
                   className="w-full px-4 py-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg text-[#EDEDED] placeholder-[#6A6A6A] focus:outline-none focus:border-blue-500 transition-colors text-sm resize-none"
+                  required
                 />
               </div>
               
@@ -270,6 +324,7 @@ const Study = () => {
                 <button
                   onClick={handleSaveNote}
                   className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                  disabled={!newNote.title || !newNote.content}
                 >
                   {editingNote ? 'Update' : 'Create'}
                 </button>

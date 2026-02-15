@@ -4,7 +4,7 @@ import {
   Search, Filter, Plus, Calendar, CheckCircle, Circle, 
   Trash2, ChevronDown, X, Clock, AlertCircle 
 } from 'lucide-react';
-import api from '../services/api';
+import supabase from '../lib/supabase';
 
 const Task = () => {
   const [tasks, setTasks] = useState([]);
@@ -18,35 +18,49 @@ const Task = () => {
 
   useEffect(() => {
     fetchTasks();
-  }, [filter, searchTerm]);
+  }, [filter, searchTerm]); // Re-fetch when filter or search changes
 
   const fetchTasks = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/tasks');
-      let filteredTasks = response.data;
-      
+
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .order('date', { ascending: true });
+
+      if (error) throw error;
+
+      let filteredTasks = data || [];
+
+      // Apply filters
       if (filter === 'today') {
-        filteredTasks = filteredTasks.filter(t => t.date === new Date().toISOString().split('T')[0]);
+        const today = new Date().toISOString().split('T')[0];
+        filteredTasks = filteredTasks.filter(t => t.date === today);
       } else if (filter === 'tomorrow') {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
-        filteredTasks = filteredTasks.filter(t => t.date === tomorrow.toISOString().split('T')[0]);
+        const tomorrowStr = tomorrow.toISOString().split('T')[0];
+        filteredTasks = filteredTasks.filter(t => t.date === tomorrowStr);
       } else if (filter === 'week') {
         const weekEnd = new Date();
         weekEnd.setDate(weekEnd.getDate() + 7);
-        filteredTasks = filteredTasks.filter(t => new Date(t.date) <= weekEnd);
-      }
-      
-      if (searchTerm) {
-        filteredTasks = filteredTasks.filter(t => 
-          t.title.toLowerCase().includes(searchTerm.toLowerCase())
+        filteredTasks = filteredTasks.filter(
+          t => new Date(t.date) <= weekEnd
         );
       }
-      
+
+      // Apply search
+      if (searchTerm) {
+        filteredTasks = filteredTasks.filter(t =>
+          t.title?.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+      }
+
       setTasks(filteredTasks);
     } catch (error) {
       console.error('Error fetching tasks:', error);
+      alert('Error loading tasks. Please refresh the page.');
     } finally {
       setLoading(false);
     }
@@ -57,37 +71,65 @@ const Task = () => {
     if (!newTask.trim()) return;
 
     try {
-      const response = await api.post('/tasks', {
-        title: newTask,
-        date: selectedDate,
-        priority,
-        completed: false
-      });
-      setTasks([...tasks, response.data]);
-      setNewTask('');
+      const { error } = await supabase
+        .from('tasks')
+        .insert([
+          {
+            title: newTask.trim(),
+            date: selectedDate,
+            priority,
+            completed: false
+          }
+        ]);
+
+      if (error) throw error;
+
+      await fetchTasks(); // Refresh the task list
+      setNewTask(''); // Clear input
+      
     } catch (error) {
       console.error('Error adding task:', error);
+      alert('Error adding task. Please try again.');
     }
   };
 
   const toggleTask = async (id, completed) => {
     try {
-      await api.patch(`/tasks/${id}`, { completed: !completed });
+      const { error } = await supabase
+        .from('tasks')
+        .update({ completed: !completed })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Update local state
       setTasks(tasks.map(task =>
-        task.id === id ? { ...task, completed: !task.completed } : task
+        task.id === id
+          ? { ...task, completed: !task.completed }
+          : task
       ));
     } catch (error) {
       console.error('Error toggling task:', error);
+      alert('Error updating task. Please try again.');
     }
   };
 
   const deleteTask = async (id) => {
     if (!window.confirm('Delete this task?')) return;
+
     try {
-      await api.delete(`/tasks/${id}`);
+      const { error } = await supabase
+        .from('tasks')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Update local state
       setTasks(tasks.filter(task => task.id !== id));
     } catch (error) {
       console.error('Error deleting task:', error);
+      alert('Error deleting task. Please try again.');
     }
   };
 
@@ -110,13 +152,20 @@ const Task = () => {
   };
 
   const getDateLabel = (dateStr) => {
-    const date = new Date(dateStr);
-    if (isToday(date)) return 'Today';
-    if (isTomorrow(date)) return 'Tomorrow';
-    if (isThisWeek(date)) return format(date, 'EEEE');
-    return format(date, 'MMM dd, yyyy');
+    try {
+      if (!dateStr) return '';
+      const date = new Date(dateStr);
+      if (isToday(date)) return 'Today';
+      if (isTomorrow(date)) return 'Tomorrow';
+      if (isThisWeek(date)) return format(date, 'EEEE');
+      return format(date, 'MMM dd, yyyy');
+    } catch (error) {
+      console.error('Error formatting date:', error);
+      return dateStr;
+    }
   };
 
+  // Group tasks by date label
   const groupedTasks = tasks.reduce((groups, task) => {
     const dateLabel = getDateLabel(task.date);
     if (!groups[dateLabel]) {
@@ -125,6 +174,13 @@ const Task = () => {
     groups[dateLabel].push(task);
     return groups;
   }, {});
+
+  // Sort groups by date (most recent first)
+  const sortedGroups = Object.entries(groupedTasks).sort((a, b) => {
+    const dateA = new Date(a[1][0]?.date || 0);
+    const dateB = new Date(b[1][0]?.date || 0);
+    return dateB - dateA;
+  });
 
   if (loading) {
     return (
@@ -218,6 +274,7 @@ const Task = () => {
                 <button
                   type="submit"
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm flex items-center gap-1"
+                  disabled={!newTask.trim()}
                 >
                   <Plus className="h-4 w-4" />
                   Add
@@ -228,7 +285,7 @@ const Task = () => {
 
           {/* Tasks List */}
           <div className="space-y-4">
-            {Object.entries(groupedTasks).map(([dateLabel, dateTasks]) => (
+            {sortedGroups.map(([dateLabel, dateTasks]) => (
               <div key={dateLabel} className="bg-[#0F0F0F] border border-[#2A2A2A] rounded-lg overflow-hidden">
                 <div className="px-4 py-2 bg-[#0A0A0A] border-b border-[#2A2A2A]">
                   <h3 className="text-sm font-medium text-[#9A9A9A]">{dateLabel}</h3>
@@ -270,7 +327,7 @@ const Task = () => {
               </div>
             ))}
 
-            {tasks.length === 0 && (
+            {tasks.length === 0 && !loading && (
               <div className="bg-[#0F0F0F] border border-[#2A2A2A] rounded-lg p-10 text-center">
                 <div className="w-16 h-16 bg-[#1A1A1A] rounded-full flex items-center justify-center mx-auto mb-4">
                   <CheckCircle className="h-8 w-8 text-[#6A6A6A]" />

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import supabase from '../lib/supabase';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   ResponsiveContainer, BarChart, Bar 
@@ -9,7 +10,6 @@ import {
   TrendingUp, TrendingDown, DollarSign, Clock, BookOpen, 
   ArrowRight, PlusCircle 
 } from 'lucide-react';
-import api from '../services/api';
 
 const Home = () => {
   const [stats, setStats] = useState({
@@ -33,22 +33,27 @@ const Home = () => {
   const loadDashboardData = async () => {
     try {
       setLoading(true);
-      const [tasksRes, financeRes, notesRes] = await Promise.all([
-        api.get('/tasks'),
-        api.get('/finance'),
-        api.get('/notes')
-      ]);
+      
+      // Fetch data from Supabase
+      const { data: tasksData, error: tasksError } = await supabase.from('tasks').select('*');
+      const { data: financeData, error: financeError } = await supabase.from('finance').select('*');
+      const { data: notesData, error: notesError } = await supabase.from('notes').select('*');
 
-      const tasks = tasksRes.data;
-      const finance = financeRes.data;
-      const notes = notesRes.data;
+      if (tasksError || financeError || notesError) {
+        throw new Error('Error fetching data');
+      }
+
+      // Use the fetched data
+      const tasks = tasksData || [];
+      const finance = financeData || [];
+      const notes = notesData || [];
 
       const pendingTasks = tasks.filter(t => !t.completed);
       const today = new Date().toISOString().split('T')[0];
       
       const todayExpenses = finance
         .filter(f => f.date === today && f.type === 'expense')
-        .reduce((acc, curr) => acc + curr.amount, 0);
+        .reduce((acc, curr) => acc + (curr.amount || 0), 0);
 
       const weekDays = eachDayOfInterval({
         start: startOfWeek(new Date()),
@@ -65,12 +70,14 @@ const Home = () => {
         };
       });
 
-      const totalIncome = finance.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
-      const totalExpenses = finance.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+      const totalIncome = finance.filter(t => t.type === 'income').reduce((sum, t) => sum + (t.amount || 0), 0);
+      const totalExpenses = finance.filter(t => t.type === 'expense').reduce((sum, t) => sum + (t.amount || 0), 0);
 
       const categoryMap = new Map();
       finance.filter(t => t.type === 'expense').forEach(t => {
-        categoryMap.set(t.category, (categoryMap.get(t.category) || 0) + t.amount);
+        if (t.category) {
+          categoryMap.set(t.category, (categoryMap.get(t.category) || 0) + (t.amount || 0));
+        }
       });
 
       const categoryBreakdown = Array.from(categoryMap.entries()).map(([name, value]) => ({
@@ -79,13 +86,15 @@ const Home = () => {
         percentage: totalExpenses > 0 ? ((value / totalExpenses) * 100).toFixed(1) : 0
       })).sort((a, b) => b.value - a.value);
 
-      const recentTransactions = finance.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
+      const recentTransactions = [...finance]
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 5);
 
       const nextWeek = new Date();
       nextWeek.setDate(nextWeek.getDate() + 7);
       
       const upcomingTasks = tasks
-        .filter(t => !t.completed && new Date(t.date) <= nextWeek && new Date(t.date) >= new Date())
+        .filter(t => !t.completed && t.date && new Date(t.date) <= nextWeek && new Date(t.date) >= new Date())
         .sort((a, b) => new Date(a.date) - new Date(b.date))
         .slice(0, 5);
 
@@ -354,8 +363,8 @@ const Home = () => {
                           }
                         </div>
                         <div>
-                          <p className="text-xs text-[#EDEDED]">{t.description}</p>
-                          <p className="text-[8px] text-[#6A6A6A]">{t.category}</p>
+                          <p className="text-xs text-[#EDEDED]">{t.description || t.title || 'Transaction'}</p>
+                          <p className="text-[8px] text-[#6A6A6A]">{t.category || 'Uncategorized'}</p>
                         </div>
                       </div>
                       <div className="text-right">
@@ -364,7 +373,7 @@ const Home = () => {
                         }`}>
                           {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
                         </p>
-                        <p className="text-[8px] text-[#6A6A6A]">{format(new Date(t.date), 'MMM dd')}</p>
+                        <p className="text-[8px] text-[#6A6A6A]">{t.date ? format(new Date(t.date), 'MMM dd') : ''}</p>
                       </div>
                     </div>
                   ))}
